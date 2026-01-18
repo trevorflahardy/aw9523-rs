@@ -251,10 +251,10 @@ where
     /// approach ensures reliable register writes.
     fn write_register(&mut self, data: &[u8]) -> Result<(), Aw9523Error<I2C::Error>> {
         // Phase 1: Set register pointer by doing a write_read with register address
-        let mut dummy_buf = [0u8];
-        self.i2c
-            .write_read(self.addr, &[data[0]], &mut dummy_buf)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+        // let mut dummy_buf = [0u8];
+        // self.i2c
+        //    .write_read(self.addr, &[data[0]], &mut dummy_buf)
+        //    .map_err(|e| Aw9523Error::ReadError(e))?;
 
         // Phase 2: Write register address + value
         self.i2c
