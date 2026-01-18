@@ -1,9 +1,13 @@
 [package]
-name = "aw9523"
+name = "aw9523-embedded"
 version = "0.1.0"
 edition = "2021"
 authors = ["Trevor Flahardy"]
 license = "MIT"
+description = "A platform-agnostic embedded-hal driver for the AW9523 16-channel GPIO expander and LED driver"
+repository = "https://github.com/georgik/aw9523-rs"
+keywords = ["embedded-hal", "gpio", "led-driver", "i2c", "no-std"]
+categories = ["embedded", "hardware-support", "no-std"]
 
 
 [dependencies]
