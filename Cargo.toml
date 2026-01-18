@@ -10,8 +10,18 @@ keywords = ["embedded-hal", "gpio", "led-driver", "i2c", "no-std"]
 categories = ["embedded", "hardware-support", "no-std"]
 
 
+[features]
+## Enable async support using embedded-hal-async traits
+## When enabled, provides async versions of all driver methods that work with async I2C implementations
+async = ["dep:embedded-hal-async"]
+
 [dependencies]
 embedded-hal = "1.0.0"
+## Optional: async version of embedded-hal, enabled via "async" feature
+embedded-hal-async = { version = "1.0.0", optional = true }
 
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", features = ["eh1"] }
+## Async test runtime for running async tests
+tokio = { version = "1", features = ["macros", "rt"] }
+futures = "0.3"

@@ -16,11 +16,12 @@
 //! - Individual pin control or bulk 16-bit operations
 //! - Configurable interrupt detection per pin
 //! - LED mode with PWM-like current control
+//! - **Async support** via the `async` feature (requires `embedded-hal-async`)
 //!
-//! # Example
+//! # Blocking Example
 //!
 //! ```ignore
-//! use aw9523::{Aw9523, OUTPUT, INPUT};
+//! use aw9523::{Aw9523, PinMode, HIGH};
 //! # let i2c = todo!();
 //!
 //! // Create device with I2C bus and default address
@@ -30,16 +31,45 @@
 //! gpio.init().unwrap();
 //!
 //! // Configure pin 0 as output and set it high
-//! gpio.pin_mode(0, OUTPUT).unwrap();
-//! gpio.digital_write(0, true).unwrap();
+//! gpio.pin_mode(0, PinMode::Output).unwrap();
+//! gpio.digital_write(0, HIGH).unwrap();
 //!
 //! // Configure pin 8 as input and read it
-//! gpio.pin_mode(8, INPUT).unwrap();
+//! gpio.pin_mode(8, PinMode::Input).unwrap();
 //! let state = gpio.digital_read(8).unwrap();
+//! ```
+//!
+//! # Async Example
+//!
+//! Enable the `async` feature in your `Cargo.toml`:
+//! ```toml
+//! [dependencies]
+//! aw9523-embedded = { version = "0.1", features = ["async"] }
+//! ```
+//!
+//! Then use the async API:
+//! ```ignore
+//! use aw9523::{r#async::Aw9523Async, PinMode, HIGH};
+//! # let i2c = todo!(); // async I2C implementation
+//!
+//! async fn example() {
+//!     // Create device with async I2C bus
+//!     let mut gpio = Aw9523Async::new(i2c, 0x58);
+//!
+//!     // All methods are async
+//!     gpio.init().await.unwrap();
+//!     gpio.pin_mode(0, PinMode::Output).await.unwrap();
+//!     gpio.digital_write(0, HIGH).await.unwrap();
+//! }
 //! ```
 
 #![no_std]
 
+#[cfg(test)]
+#[macro_use]
+extern crate std;
+
+pub use embedded_hal::digital::PinState;
 use embedded_hal::i2c::{AddressMode, I2c};
 
 /// Default I2C address for the AW9523
@@ -160,10 +190,28 @@ pub const AW9523_PORT1_ALL: u16 = 0xFF00;
 /// Bitmask for all 16 pins
 pub const AW9523_ALL_PINS: u16 = 0xFFFF;
 
-/// Pin mode constant for input direction
+/// Pin mode/direction configuration.
+///
+/// Defines how a pin should be configured when using [`Aw9523::pin_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinMode {
+    /// Configure pin as a digital input
+    Input,
+    /// Configure pin as a digital output
+    Output,
+    /// Configure pin as an LED driver with constant-current control
+    LedMode,
+}
+
+/// Pin mode constant for input direction (deprecated, use [`PinMode::Input`] instead)
 pub const INPUT: u8 = 0;
-/// Pin mode constant for output direction
+/// Pin mode constant for output direction (deprecated, use [`PinMode::Output`] instead)
 pub const OUTPUT: u8 = 1;
+
+/// Constant for HIGH pin state
+pub const HIGH: PinState = PinState::High;
+/// Constant for LOW pin state
+pub const LOW: PinState = PinState::Low;
 
 /// Errors that can occur when interacting with the AW9523
 #[derive(Debug)]
@@ -380,10 +428,10 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// # use aw9523::{Aw9523, AW9523_LED_MODE};
+    /// # use aw9523::{Aw9523, PinMode};
     /// # let i2c = todo!();
     /// # let mut gpio = Aw9523::new(i2c, 0x58);
-    /// gpio.pin_mode(0, AW9523_LED_MODE).unwrap();
+    /// gpio.pin_mode(0, PinMode::LedMode).unwrap();
     /// gpio.analog_write(0, 128).unwrap(); // 50% brightness
     /// ```
     pub fn analog_write(&mut self, pin: u8, val: u8) -> Result<(), Aw9523Error<I2C::Error>> {
@@ -405,7 +453,7 @@ where
     /// # Arguments
     ///
     /// * `pin` - Pin number (0-15)
-    /// * `val` - Output state (true = high, false = low)
+    /// * `state` - Output state ([`HIGH`] / [`LOW`] or [`PinState::High`] / [`PinState::Low`])
     ///
     /// # Errors
     ///
@@ -414,13 +462,18 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// # use aw9523::{Aw9523, OUTPUT};
+    /// # use aw9523::{Aw9523, PinMode, HIGH, LOW};
     /// # let i2c = todo!();
     /// # let mut gpio = Aw9523::new(i2c, 0x58);
-    /// gpio.pin_mode(3, OUTPUT).unwrap();
-    /// gpio.digital_write(3, true).unwrap(); // Set pin 3 high
+    /// gpio.pin_mode(3, PinMode::Output).unwrap();
+    /// gpio.digital_write(3, HIGH).unwrap(); // Set pin 3 high
+    /// gpio.digital_write(3, LOW).unwrap(); // Set pin 3 low
     /// ```
-    pub fn digital_write(&mut self, pin: u8, val: bool) -> Result<(), Aw9523Error<I2C::Error>> {
+    pub fn digital_write(
+        &mut self,
+        pin: u8,
+        state: PinState,
+    ) -> Result<(), Aw9523Error<I2C::Error>> {
         if pin > 15 {
             return Err(Aw9523Error::InvalidArgument);
         }
@@ -433,10 +486,9 @@ where
             .write_read(self.addr, &[reg_addr], &mut buffer)
             .map_err(Aw9523Error::ReadError)?;
 
-        let new_val = if val {
-            buffer[0] | (1 << bit_pos)
-        } else {
-            buffer[0] & !(1 << bit_pos)
+        let new_val = match state {
+            PinState::High => buffer[0] | (1 << bit_pos),
+            PinState::Low => buffer[0] & !(1 << bit_pos),
         };
         self.write_register(&[reg_addr, new_val])
     }
@@ -461,10 +513,10 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// # use aw9523::{Aw9523, INPUT};
+    /// # use aw9523::{Aw9523, PinMode};
     /// # let i2c = todo!();
     /// # let mut gpio = Aw9523::new(i2c, 0x58);
-    /// gpio.pin_mode(8, INPUT).unwrap();
+    /// gpio.pin_mode(8, PinMode::Input).unwrap();
     /// let state = gpio.digital_read(8).unwrap();
     /// ```
     pub fn digital_read(&mut self, pin: u8) -> Result<bool, Aw9523Error<I2C::Error>> {
@@ -525,31 +577,27 @@ where
     /// # Arguments
     ///
     /// * `pin` - Pin number (0-15)
-    /// * `mode` - One of:
-    ///   - `INPUT` - Digital input
-    ///   - `OUTPUT` - Digital output
-    ///   - `AW9523_LED_MODE` - LED driver with current control
+    /// * `mode` - Pin configuration mode:
+    ///   - [`PinMode::Input`] - Digital input
+    ///   - [`PinMode::Output`] - Digital output
+    ///   - [`PinMode::LedMode`] - LED driver with current control
     ///
     /// # Errors
     ///
-    /// Returns `InvalidArgument` if the pin number is greater than 15 or if
-    /// the mode is not one of the valid values.
+    /// Returns `InvalidArgument` if the pin number is greater than 15.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// # use aw9523::{Aw9523, OUTPUT, INPUT, AW9523_LED_MODE};
+    /// # use aw9523::{Aw9523, PinMode};
     /// # let i2c = todo!();
     /// # let mut gpio = Aw9523::new(i2c, 0x58);
-    /// gpio.pin_mode(0, OUTPUT).unwrap();          // Digital output
-    /// gpio.pin_mode(5, INPUT).unwrap();           // Digital input
-    /// gpio.pin_mode(12, AW9523_LED_MODE).unwrap(); // LED driver
+    /// gpio.pin_mode(0, PinMode::Output).unwrap();  // Digital output
+    /// gpio.pin_mode(5, PinMode::Input).unwrap();   // Digital input
+    /// gpio.pin_mode(12, PinMode::LedMode).unwrap(); // LED driver
     /// ```
-    pub fn pin_mode(&mut self, pin: u8, mode: u8) -> Result<(), Aw9523Error<I2C::Error>> {
+    pub fn pin_mode(&mut self, pin: u8, mode: PinMode) -> Result<(), Aw9523Error<I2C::Error>> {
         if pin > 15 {
-            return Err(Aw9523Error::InvalidArgument);
-        }
-        if mode != OUTPUT && mode != INPUT && mode != AW9523_LED_MODE {
             return Err(Aw9523Error::InvalidArgument);
         }
 
@@ -568,22 +616,21 @@ where
             .map_err(Aw9523Error::ReadError)?;
 
         let (config_val, ledmode_val) = match mode {
-            OUTPUT => {
+            PinMode::Output => {
                 let conf = config_buffer[0] & !(1 << bit_pos);
                 let led = ledmode_buffer[0] | (1 << bit_pos);
                 (conf, led)
             }
-            INPUT => {
+            PinMode::Input => {
                 let conf = config_buffer[0] | (1 << bit_pos);
                 let led = ledmode_buffer[0] | (1 << bit_pos);
                 (conf, led)
             }
-            AW9523_LED_MODE => {
+            PinMode::LedMode => {
                 let conf = config_buffer[0] & !(1 << bit_pos);
                 let led = ledmode_buffer[0] & !(1 << bit_pos);
                 (conf, led)
             }
-            _ => unreachable!(),
         };
         self.write_register(&[config_reg, config_val])?;
         self.write_register(&[ledmode_reg, ledmode_val])?;
@@ -823,7 +870,7 @@ mod tests {
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        dev.digital_write(3, true).unwrap();
+        dev.digital_write(3, PinState::High).unwrap();
 
         let mut i2c = dev.destroy();
         i2c.done();
@@ -841,7 +888,7 @@ mod tests {
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        dev.digital_write(12, false).unwrap();
+        dev.digital_write(12, PinState::Low).unwrap();
 
         let mut i2c = dev.destroy();
         i2c.done();
@@ -852,7 +899,7 @@ mod tests {
         let i2c = I2cMock::new(&[]);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        let err = dev.digital_write(99, true).unwrap_err();
+        let err = dev.digital_write(99, PinState::High).unwrap_err();
         matches!(err, Aw9523Error::InvalidArgument);
 
         let mut i2c = dev.destroy();
@@ -919,7 +966,7 @@ mod tests {
 
     #[test]
     fn pin_mode_output_sets_config0_bit_to_0_and_ledmode_to_gpio() {
-        // pin_mode(pin, OUTPUT):
+        // pin_mode(pin, PinMode::Output):
         // - CONFIG bit cleared (0=output)
         // - LEDMODE bit set (1=GPIO mode)
         //
@@ -939,7 +986,7 @@ mod tests {
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        dev.pin_mode(5, OUTPUT).unwrap();
+        dev.pin_mode(5, PinMode::Output).unwrap();
 
         let mut i2c = dev.destroy();
         i2c.done();
@@ -947,7 +994,7 @@ mod tests {
 
     #[test]
     fn pin_mode_input_sets_config_bit_to_1_and_ledmode_to_gpio() {
-        // pin_mode(pin, INPUT):
+        // pin_mode(pin, PinMode::Input):
         // - CONFIG bit set (1=input)
         // - LEDMODE bit set (1=GPIO mode)
         //
@@ -965,7 +1012,7 @@ mod tests {
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        dev.pin_mode(6, INPUT).unwrap();
+        dev.pin_mode(6, PinMode::Input).unwrap();
 
         let mut i2c = dev.destroy();
         i2c.done();
@@ -973,7 +1020,7 @@ mod tests {
 
     #[test]
     fn pin_mode_led_mode_sets_output_and_led_mode_bits() {
-        // pin_mode(pin, AW9523_LED_MODE):
+        // pin_mode(pin, PinMode::LedMode):
         // - CONFIG bit cleared (output)
         // - LEDMODE bit cleared (0=LED mode)
         //
@@ -991,19 +1038,7 @@ mod tests {
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
 
-        dev.pin_mode(14, AW9523_LED_MODE).unwrap();
-
-        let mut i2c = dev.destroy();
-        i2c.done();
-    }
-
-    #[test]
-    fn pin_mode_rejects_invalid_mode() {
-        let i2c = I2cMock::new(&[]);
-        let mut dev = Aw9523::new(i2c, ADDR);
-
-        let err = dev.pin_mode(0, 99).unwrap_err();
-        matches!(err, Aw9523Error::InvalidArgument);
+        dev.pin_mode(14, PinMode::LedMode).unwrap();
 
         let mut i2c = dev.destroy();
         i2c.done();
@@ -1047,3 +1082,27 @@ mod tests {
         i2c.done();
     }
 }
+
+/// Async implementation of the AW9523 driver.
+///
+/// This module provides an async version of the AW9523 driver that uses
+/// `embedded-hal-async` traits. Enable the `async` feature to use this module.
+///
+/// All methods in this module are asynchronous and must be `.await`ed.
+///
+/// # Example
+///
+/// ```ignore
+/// use aw9523::{r#async::Aw9523Async, OUTPUT, HIGH};
+/// # let i2c = todo!(); // async I2C
+///
+/// async fn configure_gpio() {
+///     let mut gpio = Aw9523Async::new(i2c, 0x58);
+///     gpio.init().await.unwrap();
+///     gpio.pin_mode(0, OUTPUT).await.unwrap();
+///     gpio.digital_write(0, HIGH).await.unwrap();
+/// }
+/// ```
+#[cfg(feature = "async")]
+#[path = "async_impl.rs"]
+pub mod r#async;
