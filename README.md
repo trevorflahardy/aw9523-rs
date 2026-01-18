@@ -2,7 +2,7 @@
 
 ![MSRV](https://img.shields.io/badge/MSRV-1.60-blue?style=flat-square)
 
-Rust implementation of AW9523 GPIO Expander driver used in M5Stack CoreS3 devices.
+Rust implementation of AW9523 GPIO Expander driver.
 
 Initial version.
 
