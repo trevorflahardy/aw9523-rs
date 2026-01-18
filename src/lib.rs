@@ -238,7 +238,25 @@ where
     }
 
     /// Writes data to a register on the device.
+    ///
+    /// Uses a two-phase write approach required by the AW9523 hardware:
+    /// 1. Write register address and read dummy byte to set register pointer
+    /// 2. Write register address + data to commit the value
+    ///
+    /// **Why this pattern is necessary:**
+    /// The AW9523 hardware does not reliably support simple I2C write transactions
+    /// with register address + data in one operation. Without the initial write_read
+    /// to set the register pointer, the chip may NAK (not acknowledge) the data byte,
+    /// resulting in `WriteError(AcknowledgeCheckFailed(Data))`. This two-phase
+    /// approach ensures reliable register writes.
     fn write_register(&mut self, data: &[u8]) -> Result<(), Aw9523Error<I2C::Error>> {
+        // Phase 1: Set register pointer by doing a write_read with register address
+        let mut dummy_buf = [0u8];
+        self.i2c
+            .write_read(self.addr, &[data[0]], &mut dummy_buf)
+            .map_err(|e| Aw9523Error::ReadError(e))?;
+
+        // Phase 2: Write register address + value
         self.i2c
             .write(self.addr, data)
             .map_err(|e| Aw9523Error::WriteError(e))
@@ -624,19 +642,34 @@ mod tests {
     use super::*;
     use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
 
+    // Vec is available in test mode (std is enabled for tests)
+    #[allow(unused_imports)]
+    extern crate std;
+    use std::vec::Vec;
+
     const ADDR: u8 = 0x58;
+
+    /// Helper macro to create the two-phase write pattern: write_read + write
+    /// The AW9523 hardware requires setting the register pointer before writing data
+    macro_rules! write_reg {
+        ($addr:expr, $reg:expr, $val:expr) => {
+            [
+                I2cTransaction::write_read($addr, [$reg].to_vec(), [0].to_vec()),
+                I2cTransaction::write($addr, [$reg, $val].to_vec()),
+            ]
+        };
+    }
 
     #[test]
     fn init_writes_expected_registers_in_order() {
-        // init() is a pure sequence of I2C writes. This test asserts the exact bytes and order.
-        let expectations = [
-            I2cTransaction::write(ADDR, [AW9523_REG_OUTPUT0, 0b0000_0101].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_OUTPUT1, 0b0000_0011].to_vec()), // OUTPUT1
-            I2cTransaction::write(ADDR, [AW9523_REG_CONFIG0, 0b0001_1000].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_CONFIG1, 0b0000_1100].to_vec()), // CONFIG1
-            I2cTransaction::write(ADDR, [AW9523_REG_GCR, 0b0001_0000].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_LEDMODE1, 0b1111_1111].to_vec()), // LEDMODE1
-        ];
+        // init() writes 6 registers using two-phase pattern (write_read + write for each)
+        let mut expectations = Vec::new();
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_OUTPUT0, 0b0000_0101));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_OUTPUT1, 0b0000_0011));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_CONFIG0, 0b0001_1000));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_CONFIG1, 0b0000_1100));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_GCR, 0b0001_0000));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_LEDMODE1, 0b1111_1111));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -649,11 +682,8 @@ mod tests {
 
     #[test]
     fn reset_writes_softreset_register() {
-        // reset() is a single write to 0x7F with 0x00.
-        let expectations = [I2cTransaction::write(
-            ADDR,
-            [AW9523_REG_SOFTRESET, 0x00].to_vec(),
-        )];
+        // reset() uses two-phase write pattern
+        let expectations = write_reg!(ADDR, AW9523_REG_SOFTRESET, 0x00);
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -666,12 +696,11 @@ mod tests {
 
     #[test]
     fn output_gpio_writes_both_ports() {
-        // output_gpio(u16) writes low byte to OUTPUT0 (0x02) and high byte to OUTPUT1 (0x03).
+        // output_gpio(u16) writes low byte to OUTPUT0 (0x02) and high byte to OUTPUT1 (0x03) using two-phase pattern
         let pins: u16 = 0xA55A; // low=0x5A, high=0xA5
-        let expectations = [
-            I2cTransaction::write(ADDR, [AW9523_REG_OUTPUT0, 0x5A].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_OUTPUT0 + 1, 0xA5].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_OUTPUT0, 0x5A));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_OUTPUT0 + 1, 0xA5));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -707,10 +736,9 @@ mod tests {
         // interrupt_enable_gpio(pins): datasheet uses inverted logic in the enable registers.
         // Your code writes bitwise NOT of each byte.
         let pins: u16 = 0x00F0; // low=0xF0, high=0x00
-        let expectations = [
-            I2cTransaction::write(ADDR, [AW9523_REG_INTENABLE0, !0xF0].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_INTENABLE0 + 1, !0x00].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_INTENABLE0, !0xF0));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_INTENABLE0 + 1, !0x00));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -726,13 +754,13 @@ mod tests {
         // configure_direction(pins): your API says 1=output, 0=input, but hardware config is 1=input.
         // Your code inverts the output-bitmask before writing to CONFIG regs.
         let pins: u16 = 0x0F0F; // request these as outputs
-        let expectations = [
-            I2cTransaction::write(ADDR, [AW9523_REG_CONFIG0, !(pins as u8)].to_vec()),
-            I2cTransaction::write(
-                ADDR,
-                [AW9523_REG_CONFIG0 + 1, !((pins >> 8) as u8)].to_vec(),
-            ),
-        ];
+        let mut expectations = Vec::new();
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_CONFIG0, !(pins as u8)));
+        expectations.extend_from_slice(&write_reg!(
+            ADDR,
+            AW9523_REG_CONFIG0 + 1,
+            !((pins >> 8) as u8)
+        ));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -748,13 +776,13 @@ mod tests {
         // configure_led_mode(pins): your API uses 1=enable LED (constant current),
         // but register uses 0=LED mode, 1=GPIO mode. So you invert before writing.
         let pins: u16 = 0x00FF; // enable LED mode on P0 pins only
-        let expectations = [
-            I2cTransaction::write(ADDR, [AW9523_REG_LEDMODE, !(pins as u8)].to_vec()),
-            I2cTransaction::write(
-                ADDR,
-                [AW9523_REG_LEDMODE + 1, !((pins >> 8) as u8)].to_vec(),
-            ),
-        ];
+        let mut expectations = Vec::new();
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_LEDMODE, !(pins as u8)));
+        expectations.extend_from_slice(&write_reg!(
+            ADDR,
+            AW9523_REG_LEDMODE + 1,
+            !((pins >> 8) as u8)
+        ));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -769,20 +797,19 @@ mod tests {
     fn analog_write_pin_register_mapping_examples() {
         // analog_write() maps a pin number to a DIM register address.
         // This test checks a few representative pins across the mapping ranges.
-        let expectations = [
-            // pin 0 => 0x24
-            I2cTransaction::write(ADDR, [0x24, 10].to_vec()),
-            // pin 7 => 0x2B
-            I2cTransaction::write(ADDR, [0x2B, 20].to_vec()),
-            // pin 8 => 0x20
-            I2cTransaction::write(ADDR, [0x20, 30].to_vec()),
-            // pin 11 => 0x23
-            I2cTransaction::write(ADDR, [0x23, 40].to_vec()),
-            // pin 12 => 0x2C
-            I2cTransaction::write(ADDR, [0x2C, 50].to_vec()),
-            // pin 15 => 0x2F
-            I2cTransaction::write(ADDR, [0x2F, 60].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        // pin 0 => 0x24
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x24, 10));
+        // pin 7 => 0x2B
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x2B, 20));
+        // pin 8 => 0x20
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x20, 30));
+        // pin 11 => 0x23
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x23, 40));
+        // pin 12 => 0x2C
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x2C, 50));
+        // pin 15 => 0x2F
+        expectations.extend_from_slice(&write_reg!(ADDR, 0x2F, 60));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -815,13 +842,16 @@ mod tests {
         // digital_write():
         // 1) read output register for the port (write_read)
         // 2) set/clear the bit
-        // 3) write back modified byte
+        // 3) write back modified byte (using two-phase write)
         //
         // Example: pin 3 is in OUTPUT0 (0x02), bit 3.
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [AW9523_REG_OUTPUT0].to_vec(), [0b0000_0001].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_OUTPUT0, 0b0000_1001].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [AW9523_REG_OUTPUT0].to_vec(),
+            [0b0000_0001].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_OUTPUT0, 0b0000_1001));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -836,10 +866,13 @@ mod tests {
     fn digital_write_clears_bit_in_output1() {
         // Example: pin 12 is in OUTPUT1 (0x03), bit (12%8)=4.
         let reg = AW9523_REG_OUTPUT0 + 1;
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [reg].to_vec(), [0b1111_1111].to_vec()),
-            I2cTransaction::write(ADDR, [reg, 0b1110_1111].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [reg].to_vec(),
+            [0b1111_1111].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, reg, 0b1110_1111));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -887,10 +920,13 @@ mod tests {
         // enable_interrupt(pin, true) clears the bit (0 = enabled).
         // Example: pin 2 => INTENABLE0 (0x06), bit 2.
         let reg = AW9523_REG_INTENABLE0;
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [reg].to_vec(), [0b1111_1111].to_vec()),
-            I2cTransaction::write(ADDR, [reg, 0b1111_1011].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [reg].to_vec(),
+            [0b1111_1111].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, reg, 0b1111_1011));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -906,10 +942,13 @@ mod tests {
         // enable_interrupt(pin, false) sets the bit (1 = disabled).
         // Example: pin 10 => INTENABLE1 (0x07), bit 2.
         let reg = AW9523_REG_INTENABLE0 + 1;
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [reg].to_vec(), [0b0000_0000].to_vec()),
-            I2cTransaction::write(ADDR, [reg, 0b0000_0100].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [reg].to_vec(),
+            [0b0000_0000].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, reg, 0b0000_0100));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -930,14 +969,21 @@ mod tests {
         let config_reg = AW9523_REG_CONFIG0;
         let led_reg = AW9523_REG_LEDMODE;
 
-        let expectations = [
-            // reads
-            I2cTransaction::write_read(ADDR, [config_reg].to_vec(), [0b1111_1111].to_vec()),
-            I2cTransaction::write_read(ADDR, [led_reg].to_vec(), [0b0000_0000].to_vec()),
-            // writes
-            I2cTransaction::write(ADDR, [config_reg, 0b1101_1111].to_vec()), // clear bit 5
-            I2cTransaction::write(ADDR, [led_reg, 0b0010_0000].to_vec()),    // set bit 5
-        ];
+        let mut expectations = Vec::new();
+        // reads
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [config_reg].to_vec(),
+            [0b1111_1111].to_vec(),
+        ));
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [led_reg].to_vec(),
+            [0b0000_0000].to_vec(),
+        ));
+        // writes (two-phase)
+        expectations.extend_from_slice(&write_reg!(ADDR, config_reg, 0b1101_1111)); // clear bit 5
+        expectations.extend_from_slice(&write_reg!(ADDR, led_reg, 0b0010_0000)); // set bit 5
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -958,12 +1004,19 @@ mod tests {
         let config_reg = AW9523_REG_CONFIG0;
         let led_reg = AW9523_REG_LEDMODE;
 
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [config_reg].to_vec(), [0b0000_0000].to_vec()),
-            I2cTransaction::write_read(ADDR, [led_reg].to_vec(), [0b0000_0000].to_vec()),
-            I2cTransaction::write(ADDR, [config_reg, 0b0100_0000].to_vec()),
-            I2cTransaction::write(ADDR, [led_reg, 0b0100_0000].to_vec()),
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [config_reg].to_vec(),
+            [0b0000_0000].to_vec(),
+        ));
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [led_reg].to_vec(),
+            [0b0000_0000].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, config_reg, 0b0100_0000)); // set bit 6
+        expectations.extend_from_slice(&write_reg!(ADDR, led_reg, 0b0100_0000)); // set bit 6
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -984,12 +1037,19 @@ mod tests {
         let config_reg = AW9523_REG_CONFIG0 + 1;
         let led_reg = AW9523_REG_LEDMODE + 1;
 
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [config_reg].to_vec(), [0b1111_1111].to_vec()),
-            I2cTransaction::write_read(ADDR, [led_reg].to_vec(), [0b1111_1111].to_vec()),
-            I2cTransaction::write(ADDR, [config_reg, 0b1011_1111].to_vec()), // clear bit 6
-            I2cTransaction::write(ADDR, [led_reg, 0b1011_1111].to_vec()),    // clear bit 6
-        ];
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [config_reg].to_vec(),
+            [0b1111_1111].to_vec(),
+        ));
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [led_reg].to_vec(),
+            [0b1111_1111].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, config_reg, 0b1011_1111)); // clear bit 6
+        expectations.extend_from_slice(&write_reg!(ADDR, led_reg, 0b1011_1111)); // clear bit 6
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -1017,11 +1077,14 @@ mod tests {
         // open_drain_port0(true):
         // - reads GCR
         // - clears bit 4 to select open-drain
-        // - writes back
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [AW9523_REG_GCR].to_vec(), [0b0001_0000].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_GCR, 0b0000_0000].to_vec()),
-        ];
+        // - writes back (two-phase)
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [AW9523_REG_GCR].to_vec(),
+            [0b0001_0000].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_GCR, 0b0000_0000));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
@@ -1035,11 +1098,14 @@ mod tests {
     #[test]
     fn open_drain_port0_false_sets_bit_4() {
         // open_drain_port0(false):
-        // - sets bit 4 to select push-pull
-        let expectations = [
-            I2cTransaction::write_read(ADDR, [AW9523_REG_GCR].to_vec(), [0b0000_0000].to_vec()),
-            I2cTransaction::write(ADDR, [AW9523_REG_GCR, 0b0001_0000].to_vec()),
-        ];
+        // - sets bit 4 to select push-pull (two-phase)
+        let mut expectations = Vec::new();
+        expectations.push(I2cTransaction::write_read(
+            ADDR,
+            [AW9523_REG_GCR].to_vec(),
+            [0b0000_0000].to_vec(),
+        ));
+        expectations.extend_from_slice(&write_reg!(ADDR, AW9523_REG_GCR, 0b0001_0000));
 
         let i2c = I2cMock::new(&expectations);
         let mut dev = Aw9523::new(i2c, ADDR);
