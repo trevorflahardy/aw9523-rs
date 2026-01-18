@@ -238,25 +238,7 @@ where
     }
 
     /// Writes data to a register on the device.
-    ///
-    /// Uses a two-phase write approach required by the AW9523 hardware:
-    /// 1. Write register address and read dummy byte to set register pointer
-    /// 2. Write register address + data to commit the value
-    ///
-    /// **Why this pattern is necessary:**
-    /// The AW9523 hardware does not reliably support simple I2C write transactions
-    /// with register address + data in one operation. Without the initial write_read
-    /// to set the register pointer, the chip may NAK (not acknowledge) the data byte,
-    /// resulting in `WriteError(AcknowledgeCheckFailed(Data))`. This two-phase
-    /// approach ensures reliable register writes.
     fn write_register(&mut self, data: &[u8]) -> Result<(), Aw9523Error<I2C::Error>> {
-        // Phase 1: Set register pointer by doing a write_read with register address
-        // let mut dummy_buf = [0u8];
-        // self.i2c
-        //    .write_read(self.addr, &[data[0]], &mut dummy_buf)
-        //    .map_err(|e| Aw9523Error::ReadError(e))?;
-
-        // Phase 2: Write register address + value
         self.i2c
             .write(self.addr, data)
             .map_err(|e| Aw9523Error::WriteError(e))
