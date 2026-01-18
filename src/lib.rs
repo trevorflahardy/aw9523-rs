@@ -241,7 +241,7 @@ where
     fn write_register(&mut self, data: &[u8]) -> Result<(), Aw9523Error<I2C::Error>> {
         self.i2c
             .write(self.addr, data)
-            .map_err(|e| Aw9523Error::WriteError(e))
+            .map_err(Aw9523Error::WriteError)
     }
 
     /// Performs a soft reset of the device.
@@ -301,7 +301,7 @@ where
         let mut buffer = [0u8; 2];
         self.i2c
             .write_read(self.addr, &[AW9523_REG_INPUT0], &mut buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
         Ok(u16::from(buffer[0]) | (u16::from(buffer[1]) << 8))
     }
 
@@ -431,7 +431,7 @@ where
         let mut buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[reg_addr], &mut buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
 
         let new_val = if val {
             buffer[0] | (1 << bit_pos)
@@ -478,7 +478,7 @@ where
         let mut buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[reg_addr], &mut buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
         Ok((buffer[0] & (1 << bit_pos)) != 0)
     }
 
@@ -507,7 +507,7 @@ where
         let mut buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[reg_addr], &mut buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
 
         let new_val = if en {
             buffer[0] & !(1 << bit_pos)
@@ -559,13 +559,13 @@ where
         let mut config_buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[config_reg], &mut config_buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
 
         let ledmode_reg = AW9523_REG_LEDMODE + (pin / 8);
         let mut ledmode_buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[ledmode_reg], &mut ledmode_buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
 
         let (config_val, ledmode_val) = match mode {
             OUTPUT => {
@@ -608,7 +608,7 @@ where
         let mut buffer = [0u8; 1];
         self.i2c
             .write_read(self.addr, &[AW9523_REG_GCR], &mut buffer)
-            .map_err(|e| Aw9523Error::ReadError(e))?;
+            .map_err(Aw9523Error::ReadError)?;
 
         let new_val = if od {
             buffer[0] & !(1 << 4)
