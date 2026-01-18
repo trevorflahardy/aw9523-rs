@@ -2,7 +2,7 @@
 name = "aw9523"
 version = "0.1.0"
 edition = "2021"
-authors = ["Juraj Michálek <juraj.michalek@espressif.com>"]
+authors = ["Trevor Flahardy"]
 license = "MIT"
 
 
