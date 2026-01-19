@@ -1,6 +1,5 @@
 # aw9523-embedded
 
-![MSRV](https://img.shields.io/badge/MSRV-1.60-blue?style=flat-square)
 [![Crates.io](https://img.shields.io/crates/v/aw9523-embedded.svg)](https://crates.io/crates/aw9523-embedded)
 [![Documentation](https://docs.rs/aw9523-embedded/badge.svg)](https://docs.rs/aw9523-embedded)
 
